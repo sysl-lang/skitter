@@ -1,0 +1,113 @@
+// The system bars, and the rectangle they leave.
+//
+// **From Android API 35 an application draws edge to edge whether it asks to or not.** The window
+// runs under the status bar at the top and the navigation bar at the bottom, so a program that lays
+// itself out against the window's own size puts its first and last rows underneath both — drawn
+// correctly and impossible to read.
+//
+// **`Window.safe_area` is the obvious answer and it is the wrong rectangle for a drawing.** SDL
+// builds Android's safe area out of five inset types at once — `systemBars`, `systemGestures`,
+// `mandatorySystemGestures`, `tappableElement` and `displayCutout` — because the question it answers
+// is *where can a button go*. Measured on a gesture-navigation phone that is 78 pixels off each side
+// for the back-gesture strips, and a bottom inset reaching well above the navigation bar. For
+// something being looked at rather than touched, all of it is too conservative: the sides are
+// perfectly visible and nothing there is tappable.
+//
+// SDL exposes only the combined rectangle and no way to ask for one of the five, so the bars reach a
+// program through JNI or they do not reach it at all. That is what this file is.
+
+module sh.sysl.skitter
+
+import sh.sysl.sdl3.{FRect, Renderer}
+import sysl.math.{min, max}
+
+// The four bar thicknesses, in **pixels**, measured inward from each edge of the window.
+struct Insets
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+impl Eq for Insets
+    eq(self, other: Insets) -> bool =
+        self.left == other.left && self.top == other.top &&
+        self.right == other.right && self.bottom == other.bottom
+
+impl Display for Insets
+    display(self, out: *Writer, fmt: FormatSpec) =
+        display_str(s"left=${self.left} top=${self.top} right=${self.right} bottom=${self.bottom}",
+                    out, fmt)
+
+// **Four independent stores rather than one struct, and the reason is what fills them.** They are
+// written on Android's UI thread by the bridge below and read on SDL's thread by whatever is
+// drawing, and four `int` stores are the one shape where a lock buys nothing worth having: each is
+// a single aligned word, no reader can observe half of one, and a frame that draws against a
+// rotation's old bottom inset is followed sixteen milliseconds later by one that does not.
+//
+// **They must also be bare, which is a constraint rather than a preference.** `sysl build-c` refuses
+// an `@export` that reaches module storage an initializer would have to fill, because a C project
+// linking the archive supplies its own `main` and nothing ever runs that initializer — the function
+// would read whatever the loader left. A literal `0` is laid straight into the object file and has
+// no initializer to run, so these are fine and a `Signal`, a `Buf` or a stored closure is not.
+var bar_left: int = 0
+var bar_top: int = 0
+var bar_right: int = 0
+var bar_bottom: int = 0
+
+// **The JNI bridge, and the reason Skitter is a package at all.**
+//
+// JNI binds a native method by mangling the class's package and name into
+// `Java_<package>_<Class>_<method>`, so this string is a fact about *where the activity lives*.
+// Every application that wrote its own bridge therefore wrote a different symbol by hand, kept in
+// step with a Scala file it also had to rename — and getting it wrong links cleanly and dies at the
+// first call with an `UnsatisfiedLinkError`, because JNI resolves at run time.
+//
+// **Skitter fixes the class, so the symbol stops varying.** `sh.sysl.skitter.SkitterActivity` is the
+// activity `skitter-app` names in its manifest, and a launcher activity does not have to be a class
+// in the application's own package — which is what lets this live in a library and an application's
+// `applicationId` be any string it likes.
+//
+// **Nothing has to force this symbol into the link.** Every sysl module across every dependency
+// compiles into one object in the archive, so `-u SDL_main` pulls in the member this is already in.
+//
+// (`self` is a reserved word, hence `instance`.)
+@export("Java_sh_sysl_skitter_SkitterActivity_nativeSetSystemBars")
+set_system_bars(env: *u8, instance: *u8, l: i32, t: i32, r: i32, b: i32)
+    bar_left = int(l)
+    bar_top = int(t)
+    bar_right = int(r)
+    bar_bottom = int(b)
+end set_system_bars
+
+// What the bars currently are. All zero until Android reports them, which it does before the first
+// frame and again on every rotation — and all zero is also the honest answer under `sysl run` on a
+// desktop, where the same program has a whole window to draw in.
+insets() -> Insets = Insets(bar_left, bar_top, bar_right, bar_bottom)
+
+// The rectangle a drawing of `w` by `h` pixels has left, once the bars are taken off it.
+//
+// **Separate from `safe_area` so that it can be tested**, since the arithmetic is the part that can
+// be wrong without anything crashing: a sign error here is an interface drawn slightly off the
+// bottom of every phone with a navigation bar, which looks like a layout bug and is not one.
+//
+// **It never returns a negative width or height.** A rotation reports the new bars before SDL
+// reports the new window on some devices, so for a frame or two the insets can exceed the size they
+// were measured against — and a negative `FRect` is not clipped by the renderer, it is drawn
+// inside out.
+fit(w: int, h: int, ins: Insets) -> FRect
+    val x = min(ins.left, w)
+    val y = min(ins.top, h)
+
+    FRect(f32(x), f32(y), f32(max(w - x - ins.right, 0)), f32(max(h - y - ins.bottom, 0)))
+end fit
+
+// The part of the renderer's drawable that the system bars leave — in **pixels**, which is what
+// `output_size` answers and is not the window's own units on a high-density display.
+//
+// **Ask it every frame rather than once.** Both the drawable size and the bars change when the phone
+// is turned, and a value read at startup describes an orientation the program may no longer be in.
+safe_area(r: &Renderer) -> FRect
+    val (w, h) = r.output_size()
+
+    fit(int(w), int(h), insets())
+end safe_area

@@ -1,0 +1,39 @@
+// Which way up the activity starts, and the flag that decides whether the hint is read at all.
+//
+// **This is one setting spread across two calls, and that is the whole reason it is here.** Naming
+// every orientation looks sufficient and is not: `SDLActivity.setOrientationBis` only promotes
+// "all four allowed" into *follow the device* when the window is **resizable**. For a fixed-size
+// window it goes on choosing from the requested width and height instead, so a program that asks
+// for 800 by 600 and names all four orientations still comes up locked in landscape — the request
+// is wider than it is tall, and SDL reads that as an intention.
+//
+// Neither half announces the other, and the failure is a phone that will not turn rather than an
+// error, so the pair is offered here as a pair.
+
+module sh.sysl.skitter
+
+import sh.sysl.sdl3.{set_hint, WINDOW_RESIZABLE}
+
+// Every orientation, which is what a hand-held application almost always wants.
+const EVERY_WAY: string = "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight"
+
+// Upright only — for something that would be unreadable on its side.
+const UPRIGHT: string = "Portrait PortraitUpsideDown"
+
+// Say which orientations the activity may take.
+//
+// **Call it before `init`, because a hint is read when the thing it configures is created** — and on
+// Android the activity's orientation is settled during startup. Setting it afterwards changes a
+// string nothing reads again.
+//
+// It is harmless everywhere else: a desktop SDL has no such hint and ignores it, so a program that
+// runs in both places calls this unconditionally rather than guarding it.
+orient(which: string = EVERY_WAY) -> bool = set_hint("SDL_ORIENTATIONS", which)
+
+// The flags an Android window needs, with whatever else the program wants folded in.
+//
+// **`WINDOW_RESIZABLE` is not about being resized by a user** — a phone has no window edges to drag.
+// It is the second half of `orient` above, and it is also what makes the window follow the screen
+// when the device is turned. A program that passes its own flags to `create_window` should pass them
+// through here rather than beside it.
+window_flags(extra: u64 = 0) -> u64 = extra | WINDOW_RESIZABLE

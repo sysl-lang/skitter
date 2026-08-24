@@ -1,0 +1,117 @@
+// What can be checked without a phone, which is exactly the part that can be wrong without
+// anything crashing.
+//
+// **The bridge's binding is not testable here and is not pretended to be.** Whether JNI finds
+// `Java_sh_sysl_skitter_SkitterActivity_nativeSetSystemBars` is decided by a class name in an APK on
+// a device; a test that mocked the lookup would be asserting the mock. What is tested is the half a
+// mock cannot help with — the arithmetic that turns bars into a rectangle, and the storage the
+// bridge writes — because a sign error there is an interface drawn off the bottom of every phone
+// with a navigation bar, and it looks like a layout bug rather than like this.
+
+module sh.sysl.skitter
+@tests
+
+import sh.sysl.sdl3.{WINDOW_RESIZABLE, WINDOW_HIGH_PIXEL_DENSITY}
+
+// ## The rectangle the bars leave
+
+@test
+private a_window_with_no_bars_is_all_usable()
+    val r = fit(1080, 2400, Insets(0, 0, 0, 0))
+
+    assert_eq(r.x, 0.0f32)
+    assert_eq(r.y, 0.0f32)
+    assert_eq(r.w, 1080.0f32)
+    assert_eq(r.h, 2400.0f32)
+end a_window_with_no_bars_is_all_usable
+
+// The ordinary phone: a status bar at the top and a navigation bar at the bottom, and nothing at
+// the sides. These are the numbers a 1080x2400 emulator actually reports.
+@test
+private the_bars_come_off_the_edges_they_are_on()
+    val r = fit(1080, 2400, Insets(0, 63, 0, 63))
+
+    assert_eq(r.x, 0.0f32, "nothing is taken off the left")
+    assert_eq(r.y, 63.0f32, "the drawing starts below the status bar")
+    assert_eq(r.w, 1080.0f32, "the full width is still there")
+    assert_eq(r.h, 2274.0f32, "and both bars come out of the height")
+end the_bars_come_off_the_edges_they_are_on
+
+// A cutout or a turned phone puts bars on the sides too, and each one comes off its own edge rather
+// than off both.
+@test
+private a_side_bar_moves_the_origin_and_shrinks_the_width_once()
+    val r = fit(2400, 1080, Insets(80, 0, 40, 63))
+
+    assert_eq(r.x, 80.0f32)
+    assert_eq(r.w, 2280.0f32, "2400 less the 80 on the left and the 40 on the right")
+    assert_eq(r.h, 1017.0f32)
+end a_side_bar_moves_the_origin_and_shrinks_the_width_once
+
+// **The case this clamping exists for.** Some devices report the new bars before SDL reports the new
+// window, so for a frame or two after a rotation the insets are the ones measured against the *other*
+// orientation and are larger than the size they are being applied to. An unclamped subtraction gives
+// a negative width, and the renderer does not clip a negative `FRect` — it draws it inside out.
+@test
+private bars_larger_than_the_window_leave_nothing_rather_than_less_than_nothing()
+    val r = fit(400, 200, Insets(300, 500, 300, 500))
+
+    assert_eq(r.w, 0.0f32, "no negative width")
+    assert_eq(r.h, 0.0f32, "no negative height")
+    assert(r.x <= 400.0f32 && r.y <= 200.0f32, "and the origin stays inside the window")
+end bars_larger_than_the_window_leave_nothing_rather_than_less_than_nothing
+
+// Bars that exactly meet leave an empty rectangle, not a negative one — the boundary either side of
+// the clamp above.
+@test
+private bars_that_exactly_meet_leave_nothing()
+    val r = fit(100, 128, Insets(40, 64, 60, 64))
+
+    assert_eq(r.w, 0.0f32)
+    assert_eq(r.h, 0.0f32)
+
+// ## What the bridge stores
+//
+// **This drives the exported function itself**, which is the only part of the bridge that is sysl
+// rather than a name in an APK: JNI hands it six arguments, the first two of which every native
+// method gets and neither of which is read.
+@test
+private the_bridge_stores_what_android_reports()
+    set_system_bars(null, null, 10, 20, 30, 40)
+
+    assert_eq(insets(), Insets(10, 20, 30, 40))
+
+    // Reported again on the next rotation, and the second report replaces the first rather than
+    // accumulating onto it.
+    set_system_bars(null, null, 1, 2, 3, 4)
+
+    assert_eq(insets(), Insets(1, 2, 3, 4))
+
+    // Left as it was found, since these are module storage and the tests above read `fit` only.
+    set_system_bars(null, null, 0, 0, 0, 0)
+end the_bridge_stores_what_android_reports
+
+// ## Insets themselves
+
+@test
+private insets_compare_on_all_four_edges()
+    assert(Insets(1, 2, 3, 4) == Insets(1, 2, 3, 4))
+    assert(Insets(1, 2, 3, 4) != Insets(1, 2, 3, 5), "the bottom is not ignored")
+    assert(Insets(1, 2, 3, 4) != Insets(9, 2, 3, 4), "and neither is the left")
+end insets_compare_on_all_four_edges
+
+@test
+private insets_print_as_named_edges() =
+    assert_eq(s"${Insets(0, 63, 0, 63)}", "left=0 top=63 right=0 bottom=63")
+
+// ## The orientation flags
+
+// **The pair that is silent when wrong.** `window_flags` exists so that `WINDOW_RESIZABLE` cannot be
+// left off, and folding in a program's own flags must not drop it.
+@test
+private the_window_is_resizable_whatever_else_is_asked_for()
+    assert(window_flags() & WINDOW_RESIZABLE != 0)
+    assert(window_flags(WINDOW_HIGH_PIXEL_DENSITY) & WINDOW_RESIZABLE != 0)
+    assert(window_flags(WINDOW_HIGH_PIXEL_DENSITY) & WINDOW_HIGH_PIXEL_DENSITY != 0,
+           "and what was asked for is still there")
+end the_window_is_resizable_whatever_else_is_asked_for
