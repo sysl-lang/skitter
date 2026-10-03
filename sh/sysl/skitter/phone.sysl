@@ -1,0 +1,175 @@
+// What a program asks of the phone: the screen kept on, a buzz, a link opened, some text shared,
+// and whether it may use the microphone.
+//
+// **Every call here is SDL's mechanism, not JNI.** A request is a number posted with
+// `SDL_SendAndroidMessage`, which SDL delivers to the activity's `onUnhandledMessage` on Android's UI
+// thread; where a request carries a string it rides beside the number as an SDL hint, which the
+// activity reads back with SDL's `nativeGetHint`. The one answer that has to come back — whether a
+// permission is granted — returns through an exported method, the way the system bars do.
+//
+// **Everything here also runs on a desktop and is harmless there**, so a program that runs in both
+// places calls it unconditionally: the screen and a URL are SDL's on every platform, a buzz and a
+// share answer `false` because there is nothing to do them with, and every permission is granted
+// because a desktop has none to withhold.
+
+module sh.sysl.skitter
+
+import sh.sysl.sdl3.{send_android_message, request_android_permission, ANDROID_COMMAND_USER}
+import sh.sysl.sdl3.{enable_screen_saver, disable_screen_saver, set_hint, delay}
+import sysl.text.Search
+
+// ## The commands
+//
+// The numbers `SkitterActivity.onUnhandledMessage` matches on, and the hints it reads. The two files
+// are both Skitter's and change together; SDL keeps everything below `ANDROID_COMMAND_USER` for itself.
+
+const COMMAND_VIBRATE: u32 = 0x8001
+const COMMAND_TICK: u32 = 0x8002
+const COMMAND_SHARE: u32 = 0x8003
+const COMMAND_CHECK_PERMISSION: u32 = 0x8004
+
+val HINT_SHARE_TEXT: string = "SKITTER_SHARE_TEXT"
+val HINT_PERMISSION: string = "SKITTER_PERMISSION"
+
+// ## The screen
+
+// Keep the screen on while the app is in front, or let it sleep on the phone's own timeout.
+//
+// **SDL keeps it on by default**, and `skitter.keepAwake` in `gradle.properties` is what decides
+// where an app starts; this changes it while the program runs — on for a recording, off again after.
+// It is SDL's screensaver switch, which on Android is the window's `FLAG_KEEP_SCREEN_ON` and on a
+// desktop holds off the screensaver and the display's sleep.
+keep_awake(on: bool) -> bool = if on then disable_screen_saver() else enable_screen_saver()
+
+// ## Haptics
+
+// Buzz for `ms` milliseconds. `true` means the request reached the activity; a phone with no
+// vibrator ignores it. Nothing happens for a duration that is not positive.
+//
+// `false` on a desktop, which has nothing to buzz.
+vibrate(ms: int) -> bool = ms > 0 && send_android_message(COMMAND_VIBRATE, i32(ms))
+
+// The light tick a keyboard or a picker gives — the confirmation that something registered, as
+// opposed to `vibrate`'s attention-getting buzz. The phone's own tick where it has one.
+tick() -> bool = send_android_message(COMMAND_TICK, 0)
+
+// ## Handing things to other apps
+
+// Open a URL in whatever the phone opens it with. `true` means the system took it, and on a phone the
+// app goes to the background as it does.
+//
+// This is `sh.sysl.sdl3.open_url`, named here so that everything a program asks of the phone is in
+// one place; it works on a desktop as well.
+open_url(url: string) -> bool = sh.sysl.sdl3.open_url(url)
+
+// Put up Android's share sheet with `text` in it — a message, a link, a result to send to somebody.
+//
+// `false` on a desktop, which has no share sheet.
+share_text(text: string) -> bool =
+    os() == Os.Android && set_hint(HINT_SHARE_TEXT, text) && send_android_message(COMMAND_SHARE, 0)
+
+// ## Permissions
+
+// The Android permission a name stands for, or `None` for a name that stands for nothing.
+//
+// **The short names are `skitter.permissions`' own**, so a program asks with the word it used in
+// `gradle.properties`. A name with a dot in it is Android's spelling and is taken as it is.
+android_permission(name: string) -> Option[string]
+    if name.contains(".") then return Some(name)
+
+    name match
+        "microphone" -> Some("android.permission.RECORD_AUDIO")
+        "camera" -> Some("android.permission.CAMERA")
+        "internet" -> Some("android.permission.INTERNET")
+        "bluetooth" -> Some("android.permission.BLUETOOTH_CONNECT")
+        "vibrate" -> Some("android.permission.VIBRATE")
+        _ -> None
+end android_permission
+
+// The question's number, raised for every question so that a late answer cannot be taken for the
+// answer to the next one. Bare words, for the reason `insets.sysl` gives for the bars.
+var permission_question: int = 0
+var permission_reply: int = 0
+
+// How the activity answers: the question's number twice over, plus one for "granted".
+permission_answer(question: int, granted: bool) -> int = question * 2 + (if granted then 1 else 0)
+
+// The answer to `question` in `reply`, or `None` while it is still the answer to something else.
+answer_to(question: int, reply: int) -> Option[bool] =
+    if reply / 2 == question then Some(reply % 2 == 1) else None
+
+// Where the activity's answer arrives, on its UI thread. See `insets.sysl` for why this symbol is a
+// fixed string, and why a single word needs no lock.
+@export("Java_sh_sysl_skitter_SkitterActivity_nativePermissionAnswer")
+permission_answered(env: *u8, instance: *u8, reply: i32)
+    permission_reply = int(reply)
+
+// How long `permission_granted` waits for the activity, in milliseconds. An answer is one trip
+// through the UI thread, which is a millisecond or two when the app is in front.
+const ANSWER_WAIT_MS: int = 500
+
+// Whether the app holds a permission now — `"microphone"`, or Android's own spelling.
+//
+// **It asks and does not prompt**: `request_permission` is what puts the question to the user. On
+// Android it waits for the activity's answer, briefly, so call it when something happens rather
+// than on every frame; an app that does not hear back in time is told `false`.
+//
+// On a desktop every permission Android would recognise is granted, there being nothing to grant
+// it; a name that stands for nothing is `false` everywhere.
+permission_granted(name: string) -> bool
+    val p = android_permission(name) match
+        Some(p) -> p
+        None -> return false
+
+    // sysl gap: `#if android` is the natural spelling of this test, and is not used because a
+    // module with an `#if` in it loses its declarations when its package is a dependency (sysl
+    // 0.0.160); `os()` folds to the same constant.
+    if os() != Os.Android then return true
+
+    permission_question += 1
+
+    val question = permission_question
+
+    if !set_hint(HINT_PERMISSION, p) then return false
+    if !send_android_message(COMMAND_CHECK_PERMISSION, i32(question)) then return false
+
+    // The reply is written on the UI thread; the call to `delay` is what makes this loop read it
+    // afresh each time round.
+    for _ in 0..<ANSWER_WAIT_MS
+        answer_to(question, permission_reply) match
+            Some(yes) -> return yes
+            None -> delay(1)
+
+    false
+end permission_granted
+
+// Ask the user for a permission, and call `answer` with the outcome.
+//
+// **`answer` may run on another thread, and possibly much later** — after the user has dealt with a
+// system dialog — which is why it is a `&sync Fn`: what it may capture is checked, and it says what
+// it learned by writing to an `Atomic` the program's own loop reads. A permission already held is
+// answered at once, before this returns, without asking anybody.
+//
+// `false` for a name that stands for nothing, or a request that could not be made, and then `answer`
+// never runs. On a desktop the answer is `true`, at once.
+//
+// Opening a recording device or a camera asks by itself, so a program that only wants those can
+// skip this and cope with the open failing.
+@crossing(answer)
+request_permission(name: string, answer: &sync Fn(bool) -> unit) -> bool
+    val p = android_permission(name) match
+        Some(p) -> p
+        None -> return false
+
+    if os() != Os.Android
+        answer(true)
+        return true
+
+    // Asked first so that a permission Android lets the activity hold under an older name —
+    // Bluetooth before Android 12 — is answered rather than refused by a dialog that cannot grant it.
+    if permission_granted(p)
+        answer(true)
+        return true
+
+    request_android_permission(p, answer)
+end request_permission

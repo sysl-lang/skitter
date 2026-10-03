@@ -23,7 +23,8 @@ binding in `sysl-lang/sdl3` exposes the soft keyboard pleasantly too — `start_
 `stop_text_input`, `screen_keyboard_shown` — so **Skitter does not wrap any of it**. A framework that
 re-exported what was already good would be a layer to look through rather than one to use.
 
-Three things are left, and each is here because an application got it wrong first.
+Four things are left: three because an application got them wrong first, and the requests a program
+makes of the phone itself, which reach Java or nothing.
 
 ### The system bars
 
@@ -79,6 +80,37 @@ create_window(title, w, h, window_flags())      // folds in WINDOW_RESIZABLE
 Both are harmless off Android — a desktop SDL has no such hint and ignores it — so a program that
 runs in both places calls them unconditionally.
 
+### Asking the phone for things
+
+```
+keep_awake(on: bool) -> bool                                  // the screen stays on, or may sleep
+vibrate(ms: int) -> bool                                      // a buzz
+tick() -> bool                                                // the light tick a picker gives
+open_url(url: string) -> bool                                 // a browser, a mail client
+share_text(text: string) -> bool                              // Android's share sheet
+permission_granted(name: string) -> bool                      // asks, never prompts
+request_permission(name: string, answer: &sync Fn(bool) -> unit) -> bool   // prompts
+```
+
+**None of it is JNI on the sysl side.** `keep_awake` is SDL's screensaver switch, which on Android
+is `FLAG_KEEP_SCREEN_ON`; `open_url` is `SDL_OpenURL`; `request_permission` is
+`SDL_RequestAndroidPermission`. The rest are numbers posted with `SDL_SendAndroidMessage`, which SDL
+delivers to `SkitterActivity.onUnhandledMessage` on the UI thread — a string rides beside the number
+as an SDL hint the activity reads back, and the one answer that has to come back, whether a
+permission is granted, returns through an exported method the way the bars do.
+
+**A permission's name is `skitter.permissions`' word** — `microphone`, `camera`, `internet`,
+`bluetooth`, `vibrate` — or Android's own spelling with a dot in it. `request_permission`'s answer
+may arrive on another thread, which is why it is a `&sync Fn`: it says what it learned by writing to
+something the program's loop reads.
+
+**Whether the screen starts awake is `skitter.keepAwake` in `gradle.properties`**, `false` by
+default; `keep_awake` changes it while the program runs.
+
+**Everything here is harmless on a desktop**, so a program that also runs there calls it
+unconditionally: the screen and a URL are SDL's everywhere, a buzz and a share answer `false`, every
+permission is granted, and a request is answered `true` at once.
+
 ## What an application still writes
 
 **The entry point, and that is all.** Android has no `main`: `SDLActivity` loads `libmain.so` and
@@ -129,8 +161,10 @@ applied to — and the renderer does not clip a negative `FRect`, it draws it in
 sysl test .
 ```
 
-Nine, over the part that can be wrong without anything crashing: the arithmetic that turns bars into
-a rectangle, the storage the bridge writes, and that `window_flags` cannot lose `WINDOW_RESIZABLE`.
+Eighteen, over the part that can be wrong without anything crashing: the arithmetic that turns bars
+into a rectangle, the storage the bridge writes, that `window_flags` cannot lose `WINDOW_RESIZABLE`,
+the permission names and the command numbers the activity matches on, the answer that comes back
+from it, and what each request does on a desktop.
 
 **Whether JNI finds the symbol is not testable here and is not pretended to be** — it is decided by a
 class name in an APK on a device, and a test that mocked the lookup would be asserting the mock. That

@@ -30,7 +30,7 @@ package {
 }
 
 dependencies {
-  sdl3 { git = "github.com/sysl-lang/sdl3", version = "0.3.1" }
+  sdl3 { git = "github.com/sysl-lang/sdl3", version = "0.3.3" }
 }
 
 // What `sh.sysl.sdl3` itself requires, restated because a program reaching a gated module has to say

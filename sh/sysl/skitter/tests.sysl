@@ -11,7 +11,8 @@
 module sh.sysl.skitter
 @tests
 
-import sh.sysl.sdl3.{WINDOW_RESIZABLE, WINDOW_HIGH_PIXEL_DENSITY}
+import sh.sysl.sdl3.{WINDOW_RESIZABLE, WINDOW_HIGH_PIXEL_DENSITY, ANDROID_COMMAND_USER}
+import sh.sysl.sdl3.{set_hint, init, quit, screen_saver_enabled, HINT_VIDEO_DRIVER, INIT_VIDEO}
 
 // ## The rectangle the bars leave
 
@@ -115,3 +116,124 @@ private the_window_is_resizable_whatever_else_is_asked_for()
     assert(window_flags(WINDOW_HIGH_PIXEL_DENSITY) & WINDOW_HIGH_PIXEL_DENSITY != 0,
            "and what was asked for is still there")
 end the_window_is_resizable_whatever_else_is_asked_for
+
+// ## The phone
+
+// **The short names are `skitter.permissions`' table**, row for row — `app/build.gradle.kts` in
+// `skitter-app` — so a program asks with the word its `gradle.properties` used. A swapped row here
+// would ask for the camera when the program said the microphone, and nothing else would notice.
+@test
+private the_short_names_are_the_ones_gradle_properties_uses()
+    assert_eq(android_permission("microphone"), Some("android.permission.RECORD_AUDIO"))
+    assert_eq(android_permission("camera"), Some("android.permission.CAMERA"))
+    assert_eq(android_permission("internet"), Some("android.permission.INTERNET"))
+    assert_eq(android_permission("bluetooth"), Some("android.permission.BLUETOOTH_CONNECT"),
+              "the one that is asked for at run time")
+    assert_eq(android_permission("vibrate"), Some("android.permission.VIBRATE"))
+end the_short_names_are_the_ones_gradle_properties_uses
+
+@test
+private androids_own_spelling_passes_through_and_nothing_else_does()
+    assert_eq(android_permission("android.permission.WAKE_LOCK"), Some("android.permission.WAKE_LOCK"))
+    assert_eq(android_permission("microphon"), None, "a misspelling stands for nothing")
+    assert_eq(android_permission("Microphone"), None, "and the names are lower case")
+    assert_eq(android_permission(""), None)
+
+// **The numbers are `SkitterActivity`'s**, which matches on them, and SDL keeps everything below
+// `0x8000` for itself — a command there would reach SDL's handler instead of ours.
+@test
+private the_commands_are_the_activitys_numbers()
+    assert_eq(COMMAND_VIBRATE, 0x8001u32)
+    assert_eq(COMMAND_TICK, 0x8002u32)
+    assert_eq(COMMAND_SHARE, 0x8003u32)
+    assert_eq(COMMAND_CHECK_PERMISSION, 0x8004u32)
+    assert(COMMAND_VIBRATE >= ANDROID_COMMAND_USER, "above SDL's own")
+
+    assert_eq(HINT_SHARE_TEXT, "SKITTER_SHARE_TEXT")
+    assert_eq(HINT_PERMISSION, "SKITTER_PERMISSION")
+end the_commands_are_the_activitys_numbers
+
+// The activity answers `question * 2 + granted`, and an answer to an earlier question must not be
+// read as the answer to this one — that is the late reply arriving after the wait gave up.
+@test
+private an_answer_is_read_only_for_its_own_question()
+    assert_eq(answer_to(7, permission_answer(7, true)), Some(true))
+    assert_eq(answer_to(7, permission_answer(7, false)), Some(false))
+    assert_eq(answer_to(8, permission_answer(7, true)), None, "a late answer to the last question")
+    assert_eq(answer_to(1, 0), None, "nothing has been answered yet")
+end an_answer_is_read_only_for_its_own_question
+
+// **This drives the exported function**, as `the_bridge_stores_what_android_reports` does for the
+// bars: what the activity calls is what `permission_granted` reads.
+@test
+private the_answer_lands_where_it_is_read()
+    permission_answered(null, null, i32(permission_answer(3, true)))
+
+    assert_eq(answer_to(3, permission_reply), Some(true))
+
+    permission_answered(null, null, 0)
+
+private struct Answered
+    times: int
+    granted: bool
+
+// ## On a desktop
+//
+// **What a program running in both places gets here**, and every one of these is a promise the
+// module's header makes: the buzz and the share answer `false`, every permission Android would
+// recognise is granted, and asking for one answers at once.
+//
+// The `os()` tests are because a phone answers these differently; an `#if` is kept out of the
+// package for the reason `phone.sysl` gives.
+@test
+private a_desktop_has_nothing_to_buzz_or_share()
+    if os() != Os.Android
+        assert(!vibrate(40), "no vibrator")
+        assert(!tick(), "nor a tick")
+        assert(!share_text("hello"), "and no share sheet")
+
+    assert(!vibrate(0), "a buzz of no length is never sent, anywhere")
+    assert(!vibrate(-5))
+end a_desktop_has_nothing_to_buzz_or_share
+
+@test
+private a_desktop_grants_every_permission_android_would_know()
+    if os() != Os.Android
+        assert(permission_granted("microphone"))
+        assert(permission_granted("android.permission.WAKE_LOCK"))
+
+    assert(!permission_granted("microphon"), "but a name that stands for nothing is not, anywhere")
+
+@test
+private a_desktop_answers_a_request_at_once()
+    if os() != Os.Android
+        var got: &sync Answered = Answered(0, false)
+
+        val asked = request_permission("camera", (yes) ->
+            got.times += 1
+            got.granted = yes)
+
+        assert(asked, "the request was made")
+        assert_eq(got.times, 1, "answered before the call returned")
+        assert(got.granted)
+
+    var none: &sync Answered = Answered(0, false)
+
+    assert(!request_permission("camra", (yes) -> none.times += 1), "a misspelling asks nobody")
+    assert_eq(none.times, 0, "and is never answered")
+end a_desktop_answers_a_request_at_once
+
+// The screen is SDL's on a desktop as well, read back through SDL's own switch.
+@test
+private keeping_awake_is_sdls_screensaver_switch()
+    set_hint(HINT_VIDEO_DRIVER, "dummy")
+    assert(init(INIT_VIDEO), "SDL_Init")
+
+    keep_awake(false)
+    assert(screen_saver_enabled(), "the display may sleep")
+
+    keep_awake(true)
+    assert(!screen_saver_enabled(), "and it is kept on")
+
+    quit()
+end keeping_awake_is_sdls_screensaver_switch
