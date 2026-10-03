@@ -31,6 +31,9 @@ package {
 
 dependencies {
   sdl3 { git = "github.com/sysl-lang/sdl3", version = "0.3.1" }
+
+  // The settings file is TOML, read by this; it is written by `prefs.sysl` itself.
+  toml { git = "github.com/sysl-lang/toml", version = "0.1.1" }
 }
 
 // What `sh.sysl.sdl3` itself requires, restated because a program reaching a gated module has to say
