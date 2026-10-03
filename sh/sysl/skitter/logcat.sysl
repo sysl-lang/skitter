@@ -28,7 +28,7 @@ module sh.sysl.skitter
 #endif
 
 import sysl.buf.{Buf, ByteSink, buf}
-import sysl.log.{Level, Record, Sink, set_sink, text}
+import sysl.log.{Level, Record, Sink, set_sink, message_text}
 import sysl.slices.as_ptr
 
 // Android's priorities, from `<android/log.h>`. They are ABI — an application compiled against one
@@ -66,20 +66,18 @@ terminated(s: []const u8) -> &Buf[u8]
     out
 end terminated
 
-// One record as the message logcat is handed, NUL-terminated and without the newline `text` ends a
-// line with: logcat keeps one line per write, and a trailing newline there is an empty line under
-// every record.
+// One record as the message logcat is handed: the message and its fields, NUL-terminated.
+//
+// **No time and no level**, because logcat stamps both on every line itself, and a second copy of
+// each is noise in front of every record. That is `message_text` rather than `text`, which also
+// leaves off the newline — one logcat entry per write, and a trailing newline would be an empty
+// line under each.
 render(r: *Record, out: &Buf[u8])
     out.clear()
 
     var w = ByteSink(out)
 
-    text(r, &w)
-
-    val n = out.len()
-
-    if n > 0 && out.at(n - 1) == u8('\n') then out.truncate(n - 1)
-
+    message_text(r, &w)
     out.push(u8(0))
 end render
 
