@@ -40,7 +40,8 @@ import sh.sysl.parsing.source_of
 import sh.sysl.toml.{Entry, Value, parse}
 import sysl.buf.{Buf, buf}
 import sysl.fs.{IoError, read_text, write_text_atomic}
-import sysl.text.{cstring, from_cstring, from_utf8_unchecked}
+import sh.sysl.sdl3.pref_path
+import sysl.text.from_utf8_unchecked
 
 // The file's name inside the directory the store was opened on.
 const PREFS_FILE: string = "prefs.toml"
@@ -125,7 +126,7 @@ prefs_in(dir: string) -> &Prefs =
 // Where the platform gives no such directory the store is an empty one that still holds what is
 // set, for this run, and whose `error()` says each write failed — a program with nowhere to keep
 // settings still starts with its defaults.
-app_prefs(org: string, app: string) -> &Prefs = pref_dir(org, app) match
+app_prefs(org: string, app: string) -> &Prefs = pref_path(org, app) match
     Some(d) -> prefs_in(d)
     None -> Prefs("", buf(), None)
 
@@ -236,20 +237,3 @@ private float_text(x: real) -> string
 
     t + ".0"
 end float_text
-
-// `SDL_GetPrefPath`, which `sh.sysl.sdl3` binds as `pref_path` from the release after 0.3.2; this
-// package's coordinate is older, so it reaches the symbol itself.
-private extern "SDL_GetPrefPath" sdl_pref_path(org: *u8, app: *u8) -> *u8
-
-private pref_dir(org: string, app: string) -> Option[string]
-    val o = cstring(org)
-    val a = cstring(app)
-    val p = sdl_pref_path(o.ptr, a.ptr)
-
-    if p == null then return None
-
-    val d = from_cstring(p).ok()
-
-    sh.sysl.sdl3.c.free(p)
-    d
-end pref_dir

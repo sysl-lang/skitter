@@ -4,7 +4,7 @@
 
 ```
 dependencies {
-  skitter { git = "github.com/sysl-lang/skitter", version = "0.1.0" }
+  skitter { git = "github.com/sysl-lang/skitter", version = "0.2.0" }
 }
 ```
 
