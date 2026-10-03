@@ -155,6 +155,27 @@ has a whole window.
 reports the new window, so for a frame or two after a rotation the insets exceed the size they are
 applied to — and the renderer does not clip a negative `FRect`, it draws it inside out.
 
+## Settings that survive a restart
+
+```
+val prefs = app_prefs("sh.sysl", "tuner")
+val a4 = signal(prefs.real("a4", 440.0))     // a default when nothing is stored
+
+a4.set(v)                                     // wherever the slider writes it
+prefs.set_real("a4", v)
+```
+
+`real`, `int`, `bool` and `string` read with a default; `set_real`, `set_int`, `set_bool` and
+`set_string` write. **The file is `prefs.toml` in SDL's preference directory** — the app's private
+internal storage on Android, `~/Library/Application Support/<org>/<app>/` on macOS — and is one flat
+TOML table a person can open and edit. `prefs_in(dir)` keeps it anywhere else.
+
+**Every set writes the file, atomically, unless the value did not change.** Android stops a
+backgrounded app without asking, so a store waiting for a `save()` at exit would lose what changed
+since; the write goes to a pending name and is renamed, so a kill mid-write leaves the old file
+whole. **Nothing here crashes**: a missing or corrupt file, or a value of the wrong type, answers the
+default, and a write that fails is kept in `error()` while the value is still held.
+
 ## Tests
 
 ```
@@ -164,7 +185,8 @@ sysl test .
 Eighteen, over the part that can be wrong without anything crashing: the arithmetic that turns bars
 into a rectangle, the storage the bridge writes, that `window_flags` cannot lose `WINDOW_RESIZABLE`,
 the permission names and the command numbers the activity matches on, the answer that comes back
-from it, and what each request does on a desktop.
+from it, and what each request does on a desktop. Thirteen more over the settings store, each
+against a temporary directory of its own.
 
 **Whether JNI finds the symbol is not testable here and is not pretended to be** — it is decided by a
 class name in an APK on a device, and a test that mocked the lookup would be asserting the mock. That

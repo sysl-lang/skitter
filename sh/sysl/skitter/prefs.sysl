@@ -1,0 +1,255 @@
+// Settings an application keeps between launches: a few named values, read with a default and
+// written the moment they change.
+//
+//     val prefs = app_prefs("sh.sysl", "tuner")
+//     val a4 = signal(prefs.real("a4", 440.0))
+//
+//     // wherever the slider writes the signal
+//     a4.set(v)
+//     prefs.set_real("a4", v)
+//
+// **The file lives where SDL says an application's own files live** — the app's private internal
+// storage on Android, `~/Library/Application Support/<org>/<app>/` on macOS — so the same two lines
+// keep a setting on a phone and on a desktop. `prefs_in` takes any directory instead, which is what
+// a test does.
+//
+// **Every `set_` writes the file, and that is a choice about phones.** Android stops a backgrounded
+// app without asking it, so a store that waited for an explicit `save()` at exit would lose
+// whatever was changed since the last one, and nothing would say so until the next launch. A value
+// set to what it already holds writes nothing, so a slider resting under a finger costs no I/O; one
+// being dragged writes a file of a few hundred bytes per change, which is nothing next to drawing
+// the frame.
+//
+// **A write is atomic.** The text goes to a pending name beside the file and is renamed onto it
+// (`sysl.fs.write_text_atomic`), so a process killed mid-write leaves the previous file whole. The
+// pending file such a kill leaves behind has a different name and is never read.
+//
+// **The format is TOML, one flat table**, because a person may open it: `a4 = 440.0`,
+// `"odd key" = "x"`. Anything the store cannot read — a missing file, a corrupt one, a value of the
+// wrong type under a key — answers the default the caller gave, and never stops the program. A
+// corrupt file is replaced by the next write.
+//
+// **There is no binding helper for `sh.sysl.ui.Signal`, deliberately.** It would make this package
+// depend on syslUI, and a link directive is never pruned, so every Android application would link
+// the toolkit whether it used it or not. Reading the signal's start from `prefs` and calling a
+// `set_` beside the signal's own `set` is two lines and needs nothing.
+
+module sh.sysl.skitter
+
+import sh.sysl.parsing.source_of
+import sh.sysl.toml.{Entry, Value, parse}
+import sysl.buf.{Buf, buf}
+import sysl.fs.{IoError, read_text, write_text_atomic}
+import sysl.text.{cstring, from_cstring, from_utf8_unchecked}
+
+// The file's name inside the directory the store was opened on.
+const PREFS_FILE: string = "prefs.toml"
+
+// The settings, as they were read and as they have been set since.
+struct Prefs
+    // The file this store reads and writes.
+    file: string
+
+    private entries: Buf[Entry]
+    private failed: Option[IoError]
+
+    // The number under `key`, or `fallback` when there is none. A whole number written by hand
+    // (`a4 = 440`) is read as the number it is.
+    real(self, key: string, fallback: real) -> real =
+        self.find(key).and_then((v) -> v.as_float()).unwrap_or(fallback)
+
+    // The integer under `key`, or `fallback` when there is none or it does not fit an `int`.
+    int(self, key: string, fallback: int) -> int = self.find(key).and_then((v) -> v.as_int()) match
+        Some(n) -> if long(int(n)) == n then int(n) else fallback
+        None -> fallback
+
+    bool(self, key: string, fallback: bool) -> bool =
+        self.find(key).and_then((v) -> v.as_bool()).unwrap_or(fallback)
+
+    string(self, key: string, fallback: string) -> string =
+        self.find(key).and_then((v) -> v.as_str()).unwrap_or(fallback)
+
+    set_real(*self, key: string, v: real) = self.put(key, Value.Float(v))
+
+    set_int(*self, key: string, v: int) = self.put(key, Value.Int(long(v)))
+
+    set_bool(*self, key: string, v: bool) = self.put(key, Value.Bool(v))
+
+    set_string(*self, key: string, v: string) = self.put(key, Value.Str(v))
+
+    // Why the last write failed, or `None` when it did not. A setter does not answer it, because a
+    // full disk is no reason for a slider to stop working: the value is still held, and the next
+    // write tries again.
+    error(self) -> Option[IoError] = self.failed
+
+    // Write every setting now. The setters already do; this is for a caller that wants the answer.
+    save(*self) -> Result[unit, IoError]
+        val r = write_text_atomic(self.file, render(self.entries))
+
+        self.failed = r match
+            Ok(_) -> None
+            Err(e) -> Some(e)
+        r
+    end save
+
+    private find(self, key: string) -> Option[Value]
+        for i in 0..<self.entries.len()
+            if self.entries.at(i).key == key then return Some(self.entries.at(i).value)
+
+        None
+
+    private put(*self, key: string, v: Value)
+        var i: usize = 0
+
+        while i < self.entries.len() && self.entries.at(i).key != key
+            i += 1
+
+        if i == self.entries.len() then
+            self.entries.push(Entry(key, v))
+        else if same(self.entries.at(i).value, v) then
+            return
+        else
+            self.entries.set(i, Entry(key, v))
+
+        self.save().unwrap_or(())
+    end put
+end Prefs
+
+// The store kept in `dir`, read now. The directory has to exist; a file that does not, or does not
+// parse, is an empty store.
+prefs_in(dir: string) -> &Prefs =
+    Prefs(sysl.path.join(dir, PREFS_FILE), read_entries(sysl.path.join(dir, PREFS_FILE)), None)
+
+// The application's own store, in the directory SDL keeps for `org` and `app`.
+//
+// Where the platform gives no such directory the store is an empty one that still holds what is
+// set, for this run, and whose `error()` says each write failed — a program with nowhere to keep
+// settings still starts with its defaults.
+app_prefs(org: string, app: string) -> &Prefs = pref_dir(org, app) match
+    Some(d) -> prefs_in(d)
+    None -> Prefs("", buf(), None)
+
+// The scalars a file holds, in the order it holds them. Anything that is not a flat table of
+// scalars is left out rather than refused, so one hand-edited mistake costs one setting.
+private read_entries(file: string) -> Buf[Entry]
+    var out: Buf[Entry] = buf()
+    val text = read_text(file) match
+        Ok(t) -> t
+        Err(_) -> return out
+
+    val es = parse(source_of(file, text)) match
+        Ok(v) -> v.as_table().unwrap_or(buf())
+        Err(_) -> return out
+
+    for i in 0..<es.len()
+        val e = es.at(i)
+
+        if e.value.is_str() || e.value.is_int() || e.value.is_float() || e.value.is_bool() then
+            out.push(e)
+
+    out
+end read_entries
+
+// Whether two stored scalars are one value, so a set that changes nothing writes nothing. Only the
+// four kinds a store holds are compared; `toml.Value` itself has no `==`.
+private same(a: Value, b: Value) -> bool = (a, b) match
+    (Value.Str(x), Value.Str(y)) -> x == y
+    (Value.Int(x), Value.Int(y)) -> x == y
+    (Value.Float(x), Value.Float(y)) -> x == y
+    (Value.Bool(x), Value.Bool(y)) -> x == y
+    _ -> false
+
+// The file's text: one `key = value` line per setting.
+private render(es: Buf[Entry]) -> string
+    var out = "# Settings, kept by sh.sysl.skitter.Prefs. Edits are read at the next launch.\n"
+
+    for i in 0..<es.len()
+        val e = es.at(i)
+        val v = e.value match
+            Value.Str(s) -> quoted(s)
+            Value.Int(n) -> s"$n"
+            Value.Float(x) -> float_text(x)
+            Value.Bool(b) -> s"$b"
+            _ -> ""
+
+        out = out + s"${key_text(e.key)} = $v\n"
+
+    out
+end render
+
+// A key is written bare where TOML allows it and quoted everywhere else, the empty key included.
+private key_text(k: string) -> string
+    if k.len == 0 then return quoted(k)
+
+    for i in 0..<k.len
+        val c = k.bytes[i]
+        val bare = (c >= u8('a') && c <= u8('z')) || (c >= u8('A') && c <= u8('Z')) ||
+            (c >= u8('0') && c <= u8('9')) || c == u8('_') || c == u8('-')
+
+        if !bare then return quoted(k)
+
+    k
+end key_text
+
+// A TOML basic string: quotes and backslashes escaped, and every control character spelled as a
+// `\u` escape, since TOML refuses one written raw.
+//
+// It is built a byte at a time because a byte of a multi-byte character is not a string of its own;
+// everything added is ASCII, so the result is exactly as well-formed as `s` was.
+private quoted(s: string) -> string
+    var out: Buf[u8] = buf()
+
+    out.push(u8('"'))
+
+    for i in 0..<s.len
+        val c = s.bytes[i]
+
+        if c == u8('"') || c == u8('\\') then
+            out.push(u8('\\'))
+            out.push(c)
+        else if c == u8('\n') then
+            out.extend("\\n".bytes)
+        else if c == u8('\t') then
+            out.extend("\\t".bytes)
+        else if c < 0x20 || c == 0x7f then
+            out.extend("\\u00".bytes)
+            out.push(HEX.bytes[usize(c >> 4)])
+            out.push(HEX.bytes[usize(c & 0xf)])
+        else
+            out.push(c)
+
+    out.push(u8('"'))
+    from_utf8_unchecked(out.view())
+end quoted
+
+const HEX: string = "0123456789abcdef"
+
+// The shortest text that reads back as `x`. sysl prints a whole number without a point, which TOML
+// would read as an integer, so one is added; `inf` and `nan` are TOML's own spellings already.
+private float_text(x: real) -> string
+    val t = s"$x"
+
+    for i in 0..<t.len
+        val c = t.bytes[i]
+
+        if c == u8('.') || c == u8('e') || c == u8('n') then return t
+
+    t + ".0"
+end float_text
+
+// `SDL_GetPrefPath`, which `sh.sysl.sdl3` binds as `pref_path` from the release after 0.3.2; this
+// package's coordinate is older, so it reaches the symbol itself.
+private extern "SDL_GetPrefPath" sdl_pref_path(org: *u8, app: *u8) -> *u8
+
+private pref_dir(org: string, app: string) -> Option[string]
+    val o = cstring(org)
+    val a = cstring(app)
+    val p = sdl_pref_path(o.ptr, a.ptr)
+
+    if p == null then return None
+
+    val d = from_cstring(p).ok()
+
+    sh.sysl.sdl3.c.free(p)
+    d
+end pref_dir

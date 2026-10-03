@@ -1,0 +1,206 @@
+// The settings store, against a directory of its own: every test makes a fresh one under the
+// temporary directory, so nothing here reads or writes the real preference path.
+
+module sh.sysl.skitter
+@tests
+
+import sysl.fs.{make_temp_dir, read_text, remove_dir_all, write_text}
+import sysl.path.join
+import sysl.text.Search
+
+private fresh() -> string = make_temp_dir("skitter-prefs").unwrap()
+
+@test
+private each_type_comes_back_from_a_second_store()
+    val dir = fresh()
+    val a = prefs_in(dir)
+
+    a.set_real("a4", 442.5)
+    a.set_int("octave", -2)
+    a.set_bool("dark", true)
+    a.set_string("name", "violin")
+
+    val b = prefs_in(dir)
+
+    assert_eq(b.real("a4", 440.0), 442.5)
+    assert_eq(b.int("octave", 0), -2)
+    assert_eq(b.bool("dark", false), true)
+    assert_eq(b.string("name", ""), "violin")
+    remove_dir_all(dir).unwrap()
+end each_type_comes_back_from_a_second_store
+
+// Numbers that print oddly: a whole one, which sysl prints without a point; the extremes; zero's
+// sign. Each has to come back as the float it was and not as an integer or a rounding.
+@test
+private a_real_keeps_every_bit()
+    val dir = fresh()
+    val a = prefs_in(dir)
+    val xs: [6]real = [440.0, 0.1, 1e300, -0.0, 5e-324, 1.0 / 0.0]
+
+    for i in 0..<6
+        a.set_real(s"x$i", xs[i])
+
+    val b = prefs_in(dir)
+
+    for i in 0..<6
+        assert_eq(b.real(s"x$i", 7.0), xs[i], s"x$i")
+
+    remove_dir_all(dir).unwrap()
+end a_real_keeps_every_bit
+
+@test
+private a_missing_key_answers_the_default()
+    val dir = fresh()
+    val p = prefs_in(dir)
+
+    assert_eq(p.real("a4", 440.0), 440.0)
+    assert_eq(p.int("n", 3), 3)
+    assert_eq(p.bool("b", true), true)
+    assert_eq(p.string("s", "d"), "d")
+    remove_dir_all(dir).unwrap()
+
+// A key holding another type is as good as missing: a stored string never reads as a number.
+@test
+private a_value_of_the_wrong_type_answers_the_default()
+    val dir = fresh()
+    val p = prefs_in(dir)
+
+    p.set_string("a4", "loud")
+    p.set_real("ratio", 1.5)
+
+    assert_eq(p.real("a4", 440.0), 440.0)
+    assert_eq(p.int("ratio", 9), 9)
+    assert_eq(p.bool("a4", false), false)
+    remove_dir_all(dir).unwrap()
+
+// What a person editing the file writes by hand: an integer where a float is meant, and one too
+// big for an `int`.
+@test
+private a_hand_written_file_reads_as_meant()
+    val dir = fresh()
+
+    write_text(join(dir, "prefs.toml"), "a4 = 440\nbig = 5000000000\n").unwrap()
+
+    val p = prefs_in(dir)
+
+    assert_eq(p.real("a4", 0.0), 440.0, "an integer is a number")
+    assert_eq(p.int("big", 1), 1, "out of int's range is the default, not a wrap")
+    remove_dir_all(dir).unwrap()
+
+@test
+private a_corrupt_file_gives_defaults_and_is_replaced()
+    val dir = fresh()
+
+    write_text(join(dir, "prefs.toml"), "a4 = = 4\n[[[\n\u{1}").unwrap()
+
+    val p = prefs_in(dir)
+
+    assert_eq(p.real("a4", 440.0), 440.0)
+
+    p.set_real("a4", 432.0)
+    assert_eq(prefs_in(dir).real("a4", 0.0), 432.0, "the next write replaces it")
+    remove_dir_all(dir).unwrap()
+
+@test
+private a_missing_directory_gives_defaults_and_reports_the_write()
+    val dir = fresh()
+    val p = prefs_in(join(dir, "not-there"))
+
+    assert_eq(p.real("a4", 440.0), 440.0)
+
+    p.set_real("a4", 432.0)
+    assert(p.error().is_some(), "the failed write is reported")
+    assert_eq(p.real("a4", 0.0), 432.0, "and the value is still held")
+    remove_dir_all(dir).unwrap()
+
+// A process killed between writing the pending file and renaming it leaves that file behind. The
+// store reads only its own name, so the debris is never mistaken for settings.
+@test
+private a_pending_file_left_behind_is_ignored()
+    val dir = fresh()
+    val p = prefs_in(dir)
+
+    p.set_real("a4", 441.0)
+    write_text(join(dir, "prefs.toml.pending-1-1"), "a4 = 999.0\n").unwrap()
+
+    assert_eq(prefs_in(dir).real("a4", 0.0), 441.0)
+    remove_dir_all(dir).unwrap()
+
+// Every write goes through a pending name, so after one the directory holds the file and nothing
+// else.
+@test
+private a_save_leaves_only_the_file()
+    val dir = fresh()
+    val p = prefs_in(dir)
+
+    p.set_bool("dark", true)
+    p.set_bool("dark", false)
+
+    val names = sysl.fs.entries(dir).unwrap()
+
+    assert_eq(names.len(), 1, s"$names")
+    assert_eq(names.at(0), "prefs.toml")
+    remove_dir_all(dir).unwrap()
+
+@test
+private keys_and_strings_with_odd_characters_round_trip()
+    val dir = fresh()
+    val p = prefs_in(dir)
+    val keys: [5]string = ["a.b", "with space", "quote\"and\\slash", "", "π"]
+    val odd = "line\nbreak\ttab \"q\" \\ \u{1} \u{7f} é"
+
+    for i in 0..<5
+        p.set_string(keys[i], s"v$i")
+
+    p.set_string("odd", odd)
+
+    val q = prefs_in(dir)
+
+    for i in 0..<5
+        assert_eq(q.string(keys[i], "missing"), s"v$i", keys[i])
+
+    assert_eq(q.string("odd", ""), odd)
+    remove_dir_all(dir).unwrap()
+end keys_and_strings_with_odd_characters_round_trip
+
+// The file is for a person too: a plain key is written bare and a number reads as one.
+@test
+private the_file_reads_as_toml_a_person_could_edit()
+    val dir = fresh()
+    val p = prefs_in(dir)
+
+    p.set_real("a4", 440.0)
+    p.set_string("a b", "x")
+
+    val text = read_text(join(dir, "prefs.toml")).unwrap()
+
+    assert(text.contains("\na4 = 440.0\n"), text)
+    assert(text.contains("\n\"a b\" = \"x\"\n"), text)
+    remove_dir_all(dir).unwrap()
+
+// Setting a value to what it already holds writes nothing — so a file removed behind the store's
+// back stays removed until something actually changes.
+@test
+private an_unchanged_value_writes_nothing()
+    val dir = fresh()
+    val p = prefs_in(dir)
+
+    p.set_int("n", 1)
+    sysl.fs.remove_file(join(dir, "prefs.toml")).unwrap()
+
+    p.set_int("n", 1)
+    assert(!sysl.fs.exists(join(dir, "prefs.toml")), "the same value is not a write")
+
+    p.set_int("n", 2)
+    assert(sysl.fs.exists(join(dir, "prefs.toml")), "a new one is")
+    remove_dir_all(dir).unwrap()
+end an_unchanged_value_writes_nothing
+
+// The application's own store answers a directory SDL made for it.
+@test
+private the_app_store_lives_in_the_pref_path()
+    val p = app_prefs("sh.sysl.skitter-tests", "prefs")
+
+    assert(p.file.ends_with("sh.sysl.skitter-tests/prefs/prefs.toml"), p.file)
+
+    remove_dir_all(p.file[0..<p.file.len - "prefs/prefs.toml".len]).unwrap()
