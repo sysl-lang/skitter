@@ -1,0 +1,119 @@
+// Logging that reaches logcat.
+//
+// **On a phone, standard output and standard error go nowhere.** Android starts an application's
+// process with both pointed at `/dev/null`, so `print` and `sysl.log`'s default — standard error —
+// are thrown away before anything could read them. The one place a line written on a device can be
+// read back is the system log, through `__android_log_write` in `liblog`, and that is what this file
+// connects `sysl.log` to.
+//
+// **It is a `sysl.log` sink rather than a logger of its own**, so a library five levels down that
+// already calls `sysl.log.info` reaches logcat without knowing it is on a phone, and the threshold
+// `set_level` sets is the one that filters. One line in the program installs it:
+//
+//     logcat("musicbox")
+//
+// **On a desktop the same line does nothing**, and records go on reaching standard error — so the
+// program that calls it still runs unchanged under `sysl run`.
+//
+// **`print` is not redirected, deliberately.** Doing it means a thread reading a pipe dup'ed over
+// descriptors 1 and 2 for the life of the process, and it would still not work: standard output is
+// C's buffered stream, fully buffered once it is not a terminal, so a line would reach logcat only
+// when four kilobytes had piled up behind it. Changing the buffering is legal only before the first
+// write to the stream, which a library cannot know has not happened. A record handed to `sysl.log`
+// has no such problem — it is delivered whole, when it is made.
+
+module sh.sysl.skitter
+#if android
+@link("log")
+#endif
+
+import sysl.buf.{Buf, ByteSink, buf}
+import sysl.log.{Level, Record, Sink, set_sink, text}
+import sysl.slices.as_ptr
+
+// Android's priorities, from `<android/log.h>`. They are ABI — an application compiled against one
+// NDK runs on every later release — so they are written down rather than read from the header, which
+// a desktop build of the same program does not have.
+private const PRIORITY_DEBUG: i32 = 3
+private const PRIORITY_INFO: i32 = 4
+private const PRIORITY_WARN: i32 = 5
+private const PRIORITY_ERROR: i32 = 6
+
+#if android
+// `liblog`'s one-shot write: a priority, a tag and a message, both NUL-terminated.
+@needs(os)
+private extern "__android_log_write" c_log_write(prio: i32, tag: *u8, text: *u8) -> i32
+#endif
+
+// The logcat priority a record at `l` is written at. Android has `VERBOSE` below `DEBUG` and
+// `FATAL` above `ERROR`; `sysl.log` has neither, so the four map onto the four in the middle.
+priority(l: Level) -> i32 = l match
+    Level.Debug -> PRIORITY_DEBUG
+    Level.Info -> PRIORITY_INFO
+    Level.Warn -> PRIORITY_WARN
+    Level.Error -> PRIORITY_ERROR
+
+// `s`'s bytes followed by a zero.
+//
+// **A sysl `string` is not NUL-terminated** — only a literal happens to be followed by a zero — and
+// `__android_log_write` reads both of its strings up to one. A tag built at run time and handed
+// over as it stands would read past its end into whatever followed it.
+terminated(s: []const u8) -> &Buf[u8]
+    val out: &Buf[u8] = buf()
+
+    out.extend(s)
+    out.push(u8(0))
+    out
+end terminated
+
+// One record as the message logcat is handed, NUL-terminated and without the newline `text` ends a
+// line with: logcat keeps one line per write, and a trailing newline there is an empty line under
+// every record.
+render(r: *Record, out: &Buf[u8])
+    out.clear()
+
+    var w = ByteSink(out)
+
+    text(r, &w)
+
+    val n = out.len()
+
+    if n > 0 && out.at(n - 1) == u8('\n') then out.truncate(n - 1)
+
+    out.push(u8(0))
+end render
+
+// The sink: a tag, and a buffer each record is rendered into. `sysl.log` delivers under its own lock,
+// so one buffer serves every thread that logs.
+struct Logcat
+    private tag: &Buf[u8]
+    private line: &Buf[u8]
+
+impl Sink for Logcat
+    write(*self, r: *Record)
+        render(r, self.line)
+#if android
+        c_log_write(priority(r.level), as_ptr(self.tag.view()), as_ptr(self.line.view()))
+#endif
+        ()
+    end write
+
+// **The installed sink, kept here because `sysl.log` only borrows it.** `set_sink` takes a pointer
+// and leaves the lifetime to the caller, so the box has to be held by something that lives as long
+// as the program — and `None` is a literal, laid into the image with no initializer to run, which an
+// archive Gradle links has no way to call.
+private[skitter] var installed: Option[&Logcat] = None
+
+// Send every `sysl.log` record to logcat under `tag`, which is what `adb logcat -s <tag>` filters on.
+// Call it once, first thing in `SDL_main`; calling it again replaces the tag.
+//
+// Off Android this does nothing, and records keep going to standard error.
+logcat(tag: string)
+#if android
+    val sink: &Logcat = Logcat(terminated(tag.bytes), buf())
+
+    installed = Some(sink)
+    set_sink(&*sink)
+#endif
+    ()
+end logcat

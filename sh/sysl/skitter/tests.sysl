@@ -12,6 +12,10 @@ module sh.sysl.skitter
 @tests
 
 import sh.sysl.sdl3.{WINDOW_RESIZABLE, WINDOW_HIGH_PIXEL_DENSITY}
+import sysl.buf.{Buf, buf}
+import sysl.log.{Level, Record}
+import sysl.text.from_utf8_unchecked
+import sysl.time.Instant
 
 // ## The rectangle the bars leave
 
@@ -115,3 +119,64 @@ private the_window_is_resizable_whatever_else_is_asked_for()
     assert(window_flags(WINDOW_HIGH_PIXEL_DENSITY) & WINDOW_HIGH_PIXEL_DENSITY != 0,
            "and what was asked for is still there")
 end the_window_is_resizable_whatever_else_is_asked_for
+
+// ## Logcat
+//
+// **Whether `liblog` receives the line is a device's question**, answered on an emulator with
+// `adb logcat`. What is asserted here is everything handed to it: the priority, and the two strings,
+// each of which C reads up to a zero that a sysl string does not have.
+
+@test
+private each_level_has_its_own_android_priority()
+    assert_eq(priority(Level.Debug), 3)
+    assert_eq(priority(Level.Info), 4)
+    assert_eq(priority(Level.Warn), 5)
+    assert_eq(priority(Level.Error), 6)
+end each_level_has_its_own_android_priority
+
+// **A slice of a longer string, because a literal would pass by accident** — the compiler lays a
+// zero after a literal's bytes, and the tag a program builds at run time has none.
+@test
+private a_tag_is_terminated_where_it_ends_not_where_its_storage_does()
+    val t = terminated("musicbox-android"[0..<8].bytes)
+
+    assert_eq(t.len(), 9)
+    assert_eq(from_utf8_unchecked(t.view()[0..<8]), "musicbox")
+    assert_eq(t.at(8), 0)
+end a_tag_is_terminated_where_it_ends_not_where_its_storage_does
+
+// 2025-09-04 15:42:31 UTC, so the rendered line is a literal a reader can check.
+private const AT: long = 1757000551000 * 1000
+
+@test
+private a_record_is_one_terminated_line_with_no_newline()
+    var r = Record(Instant(AT), Level.Warn, "underrun", [("frames", "512")])
+    val line: &Buf[u8] = buf()
+
+    render(&r, line)
+
+    assert_eq(from_utf8_unchecked(line.view()), "2025-09-04 15:42:31 Z WARN  underrun frames=512\0")
+end a_record_is_one_terminated_line_with_no_newline
+
+// **The buffer is reused for every record**, so a short line after a long one must not keep the
+// long one's tail.
+@test
+private a_shorter_record_leaves_nothing_of_the_last_one()
+    var long = Record(Instant(AT), Level.Info, "a much longer message", [])
+    var short = Record(Instant(AT), Level.Info, "hi", [])
+    val line: &Buf[u8] = buf()
+
+    render(&long, line)
+    render(&short, line)
+
+    assert_eq(from_utf8_unchecked(line.view()), "2025-09-04 15:42:31 Z INFO  hi\0")
+end a_shorter_record_leaves_nothing_of_the_last_one
+
+// Off Android, installing the sink is a no-op, so the same program logs to standard error under
+// `sysl run`.
+@test
+private logcat_off_android_leaves_the_default_in_place()
+    logcat("skitter")
+
+    assert(installed.is_none())
+end logcat_off_android_leaves_the_default_in_place
