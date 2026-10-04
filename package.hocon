@@ -17,13 +17,13 @@
 // a library at all. An application using `sysl-lang/skitter-app` writes none of it.
 //
 //     dependencies {
-//       skitter { git = "github.com/sysl-lang/skitter", version = "0.3.0" }
+//       skitter { git = "github.com/sysl-lang/skitter", version = "0.3.1" }
 //     }
 //
 // Naming this one reaches SDL3 through it, so an application names only this.
 package {
   name    = "skitter"
-  version = "0.3.0"
+  version = "0.3.1"
 
   // 0.0.161: an `#if` in a module keeps its declarations when the package is a dependency, a
   // `build-c` archive no longer leaves `sysl_wall_us` undefined, and `sysl.log.message_text` is what
@@ -32,7 +32,7 @@ package {
 }
 
 dependencies {
-  sdl3 { git = "github.com/sysl-lang/sdl3", version = "0.3.3" }
+  sdl3 { git = "github.com/sysl-lang/sdl3", version = "0.3.5" }
 
   // The settings file is TOML, read by this; it is written by `prefs.sysl` itself.
   toml { git = "github.com/sysl-lang/toml", version = "0.1.1" }

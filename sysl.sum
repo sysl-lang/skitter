@@ -1,3 +1,4 @@
 github.com/sysl-lang/parsing v0.5.0 sha256:fc738003a37816c28231828cc1f32bdb9bddadbb62d473f1a8a93ebf8a8b174d
 github.com/sysl-lang/sdl3 v0.3.3 sha256:5e8a5574a2303c772efb1efd2b8c49beaa61945c5eee25ff1116a99261c9865c
+github.com/sysl-lang/sdl3 v0.3.5 sha256:cb2d2a1cc59b71cdb5ea837db239b94e4161e0393d5742c664682fabef3c0e9e
 github.com/sysl-lang/toml v0.1.1 sha256:95af29833ca12dabd423b1cdf6d0a4a56d79b998c390c992eb2d9971d1ab2007
