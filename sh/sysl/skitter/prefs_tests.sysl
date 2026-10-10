@@ -5,6 +5,7 @@ module sh.sysl.skitter
 @tests
 
 import sysl.fs.{make_temp_dir, read_text, remove_dir_all, write_text}
+import sysl.math.Float
 import sysl.path.join
 import sysl.text.Search
 
@@ -47,6 +48,24 @@ private a_real_keeps_every_bit()
 
     remove_dir_all(dir).unwrap()
 end a_real_keeps_every_bit
+
+// A NaN is TOML's `nan` and a large number keeps its exponent: the file holds the shortest text, not
+// the digits a plain `"$x"` writes out in full.
+@test
+private a_real_is_written_in_its_shortest_form()
+    val dir = fresh()
+    val a = prefs_in(dir)
+
+    a.set_real("big", 1e300)
+    a.set_real("none", 0.0 / 0.0)
+
+    val text = read_text(join(dir, "prefs.toml")).unwrap()
+
+    assert(text.contains("big = 1e+300\n"), text)
+    assert(text.contains("none = nan\n"), text)
+    assert(prefs_in(dir).real("none", 7.0).is_nan())
+    remove_dir_all(dir).unwrap()
+end a_real_is_written_in_its_shortest_form
 
 @test
 private a_missing_key_answers_the_default()

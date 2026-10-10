@@ -39,6 +39,7 @@ module sh.sysl.skitter
 import sh.sysl.parsing.source_of
 import sh.sysl.toml.{Entry, Value, parse}
 import sysl.buf.{Buf, buf}
+import sysl.fmt.shortest
 import sysl.fs.{IoError, read_text, write_text_atomic}
 import sh.sysl.sdl3.pref_path
 import sysl.text.from_utf8_unchecked
@@ -225,10 +226,11 @@ end quoted
 
 const HEX: string = "0123456789abcdef"
 
-// The shortest text that reads back as `x`. sysl prints a whole number without a point, which TOML
-// would read as an integer, so one is added; `inf` and `nan` are TOML's own spellings already.
+// The shortest text that reads back as `x` -- `shortest`, not `"$x"`, which writes `1e300` out as 301
+// digits and a NaN as `NaN`. A whole number has no point, which TOML would read as an integer, so one
+// is added; `inf` and `nan` are TOML's own spellings already.
 private float_text(x: real) -> string
-    val t = s"$x"
+    val t = shortest(x)
 
     for i in 0..<t.len
         val c = t.bytes[i]
