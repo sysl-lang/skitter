@@ -4,11 +4,11 @@
 
 ```
 dependencies {
-  skitter { git = "github.com/sysl-lang/skitter", version = "0.3.3" }
+  skitter { git = "github.com/sysl-lang/skitter", version = "0.3.4" }
 }
 ```
 
-Naming this one reaches SDL3 through it, because imports are transitive. It needs **sysl 0.0.161**.
+Naming this one reaches SDL3 through it, because imports are transitive. It needs **sysl 0.6.0**.
 
 **If you are starting a project, you do not start here.** Clone
 [`sysl-lang/skitter-app`](https://github.com/sysl-lang/skitter-app), change two lines, and write your
