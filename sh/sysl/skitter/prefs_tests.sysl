@@ -106,6 +106,22 @@ private a_hand_written_file_reads_as_meant()
     assert_eq(p.int("big", 1), 1, "out of int's range is the default, not a wrap")
     remove_dir_all(dir).unwrap()
 
+// The edges of `int`'s range: the extremes read, one past either end is the default.
+@test
+private int_range_edges_read_exactly()
+    val dir = fresh()
+
+    write_text(join(dir, "prefs.toml"), "hi = 2147483647\nlo = -2147483648\nhi1 = 2147483648\nlo1 = -2147483649\nneg = -5000000000\n").unwrap()
+
+    val p = prefs_in(dir)
+
+    assert_eq(p.int("hi", 1), 2147483647)
+    assert_eq(p.int("lo", 1), -2147483648)
+    assert_eq(p.int("hi1", 1), 1)
+    assert_eq(p.int("lo1", 1), 1)
+    assert_eq(p.int("neg", 1), 1)
+    remove_dir_all(dir).unwrap()
+
 @test
 private a_corrupt_file_gives_defaults_and_is_replaced()
     val dir = fresh()

@@ -62,7 +62,7 @@ struct Prefs
 
     // The integer under `key`, or `fallback` when there is none or it does not fit an `int`.
     int(self, key: string, fallback: int) -> int = self.find(key).and_then((v) -> v.as_int()) match
-        Some(n) -> if long(int(n)) == n then int(n) else fallback
+        Some(n) -> if n >= -2147483648 && n <= 2147483647 then int(n) else fallback
         None -> fallback
 
     bool(self, key: string, fallback: bool) -> bool =
