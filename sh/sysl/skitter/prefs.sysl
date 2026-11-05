@@ -96,22 +96,22 @@ struct Prefs
 
     private find(self, key: string) -> Option[Value]
         for i in 0..<self.entries.len()
-            if self.entries.at(i).key == key then return Some(self.entries.at(i).value)
+            if self.entries[i].key == key then return Some(self.entries[i].value)
 
         None
 
     private put(*self, key: string, v: Value)
         var i: usize = 0
 
-        while i < self.entries.len() && self.entries.at(i).key != key
+        while i < self.entries.len() && self.entries[i].key != key
             i += 1
 
         if i == self.entries.len() then
             self.entries.push(Entry(key, v))
-        else if same(self.entries.at(i).value, v) then
+        else if same(self.entries[i].value, v) then
             return
         else
-            self.entries.set(i, Entry(key, v))
+            self.entries[i] = Entry(key, v)
 
         self.save().unwrap_or(())
     end put
@@ -144,7 +144,7 @@ private read_entries(file: string) -> Buf[Entry]
         Err(_) -> return out
 
     for i in 0..<es.len()
-        val e = es.at(i)
+        val e = es[i]
 
         if e.value.is_str() || e.value.is_int() || e.value.is_float() || e.value.is_bool() then
             out.push(e)
@@ -166,7 +166,7 @@ private render(es: Buf[Entry]) -> string
     var out = "# Settings, kept by sh.sysl.skitter.Prefs. Edits are read at the next launch.\n"
 
     for i in 0..<es.len()
-        val e = es.at(i)
+        val e = es[i]
         val v = e.value match
             Value.Str(s) -> quoted(s)
             Value.Int(n) -> s"$n"

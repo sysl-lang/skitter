@@ -174,7 +174,7 @@ private a_save_leaves_only_the_file()
     val names = sysl.fs.entries(dir).unwrap()
 
     assert_eq(names.len(), 1, s"$names")
-    assert_eq(names.at(0), "prefs.toml")
+    assert_eq(names[0], "prefs.toml")
     remove_dir_all(dir).unwrap()
 
 @test

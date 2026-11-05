@@ -143,7 +143,7 @@ private a_tag_is_terminated_where_it_ends_not_where_its_storage_does()
 
     assert_eq(t.len(), 9)
     assert_eq(from_utf8_unchecked(t.view()[0..<8]), "musicbox")
-    assert_eq(t.at(8), 0)
+    assert_eq(t[8], 0)
 end a_tag_is_terminated_where_it_ends_not_where_its_storage_does
 
 // 2025-09-04 15:42:31 UTC — a real time, so a line that carried it would show it.
