@@ -25,8 +25,8 @@ package {
   name    = "skitter"
   version = "0.3.6"
 
-  // 0.8.0: a debug build traps on integer overflow and narrowing.
-  sysl = "0.9.0"
+  // 0.10.0: sdl3 and toml, which this reaches, are written against its views and time types.
+  sysl = "0.10.0"
 }
 
 dependencies {
