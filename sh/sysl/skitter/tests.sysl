@@ -251,6 +251,9 @@ private the_answer_lands_where_it_is_read()
 
     permission_answered(null, null, 0)
 
+// Safe to share: the desktop answers a request on the calling thread before the call returns, so
+// the closure's writes and the test's reads never overlap.
+@unchecked(Share)
 private struct Answered
     times: int
     granted: bool
