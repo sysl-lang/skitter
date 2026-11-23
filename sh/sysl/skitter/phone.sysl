@@ -83,6 +83,9 @@ android_permission(name: string) -> Option[string]
         "internet" -> Some("android.permission.INTERNET")
         "bluetooth" -> Some("android.permission.BLUETOOTH_CONNECT")
         "vibrate" -> Some("android.permission.VIBRATE")
+        // The one of `discovery`'s four that is asked for at run time; the activity answers for
+        // the Wi-Fi state instead before Android 13, where it did not exist.
+        "discovery" -> Some("android.permission.NEARBY_WIFI_DEVICES")
         _ -> None
 end android_permission
 

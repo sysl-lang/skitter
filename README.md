@@ -111,6 +111,30 @@ default; `keep_awake` changes it while the program runs.
 unconditionally: the screen and a URL are SDL's everywhere, a buzz and a share answer `false`, every
 permission is granted, and a request is answered `true` at once.
 
+### Finding a service on the network
+
+```
+discover(service_type: string) -> bool       // start browsing: "_marshal._tcp", "_http._tcp"
+stop_discovery() -> bool                     // stop, and let the multicast lock go
+services() -> Buf[Service]                   // what is there now: name, host, port
+discovery_generation() -> int                // changes whenever services() would
+discovery_failure() -> int                   // NsdManager's error code, or 0
+```
+
+DNS-SD over multicast DNS — what a Mac's Bonjour announces. **The browsing is `NsdManager`'s, in
+`SkitterActivity`**, which holds a `WifiManager` multicast lock while it browses and resolves each
+instance to an address and a port, preferring IPv4. What it learns comes back through three exported
+methods into one table behind a lock, which the program reads whenever it likes; comparing
+`discovery_generation()` once a frame is the cheap way to notice a change. A service seen again under
+the same name replaces its entry, so a Mac that moved address appears once.
+
+**Strings cross as UTF-8 byte arrays**, not `jstring`s: JNI's modified UTF-8 would split an emoji in a
+computer's name into two surrogates. The permissions are `skitter.permissions=discovery` in
+`gradle.properties` — `INTERNET`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE` and
+`NEARBY_WIFI_DEVICES` — and `request_permission("discovery", …)` asks for the one of them that is asked
+at run time. On a desktop `discover` answers `false` and the table stays empty; offer a typed address
+beside it, which a network that blocks multicast needs anyway.
+
 ## What an application still writes
 
 **The entry point, and that is all.** Android has no `main`: `SDLActivity` loads `libmain.so` and
@@ -213,7 +237,10 @@ into a rectangle, the storage the bridge writes, that `window_flags` cannot lose
 the permission names and the command numbers the activity matches on, the answer that comes back
 from it, and what each request does on a desktop. Thirteen more over the settings store, each
 against a temporary directory of its own, and six over what the logcat sink hands `liblog`: the
-priorities, a tag terminated where it ends, and the line it renders.
+priorities, a tag terminated where it ends, and the line it renders. Seven over discovery: the
+table's rules, the command numbers, and the JNI reading run against a JNI environment built in the
+test — a function table zero everywhere but the specification's two positions, so a wrong position
+calls address zero rather than passing.
 
 **Whether JNI finds the symbol is not testable here and is not pretended to be** — it is decided by a
 class name in an APK on a device, and a test that mocked the lookup would be asserting the mock. That

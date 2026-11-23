@@ -208,6 +208,8 @@ private the_short_names_are_the_ones_gradle_properties_uses()
     assert_eq(android_permission("bluetooth"), Some("android.permission.BLUETOOTH_CONNECT"),
               "the one that is asked for at run time")
     assert_eq(android_permission("vibrate"), Some("android.permission.VIBRATE"))
+    assert_eq(android_permission("discovery"), Some("android.permission.NEARBY_WIFI_DEVICES"),
+              "the one of four that is asked for at run time")
 end the_short_names_are_the_ones_gradle_properties_uses
 
 @test

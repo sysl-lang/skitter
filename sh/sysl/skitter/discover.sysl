@@ -1,0 +1,178 @@
+// Finding services on the local network: DNS-SD over multicast DNS, which is Bonjour on a Mac and
+// `NsdManager` on a phone.
+//
+//     discover("_marshal._tcp")
+//     ...
+//     for s in services()                // once a frame, or whenever the program looks
+//         print(s"${s.name} at ${s.host}:${s.port}")
+//
+// **The browsing is Android's and happens in the activity.** `NsdManager` finds the instances of a
+// type and resolves each to an address and a port; `SkitterActivity` holds a `WifiManager`
+// multicast lock while it browses, since a phone's Wi-Fi drops multicast to save power and some
+// phones drop the answers too. `discover` starts it with a command posted the way every request in
+// `phone.sysl` is; what the activity learns comes back through three exported methods.
+//
+// **What comes back is a table, read whenever the program likes, not a stream of callbacks.** The
+// activity reports on its own threads, at any time; a program draws in frames. So each report is
+// written into one table behind a lock, and the program reads a copy of it — `services()` — and
+// `discovery_generation()` says whether anything changed since the last look, so reading once a
+// frame costs a comparison.
+//
+// **Strings cross JNI as UTF-8 byte arrays**, not as `jstring`. A `jstring` reads back through
+// `GetStringUTFChars` as *modified* UTF-8, in which a character outside the Basic Multilingual Plane
+// — an emoji in a computer's name — is two encoded surrogates and not one character; the activity
+// encodes with `getBytes(UTF_8)` and this side copies the bytes out with `GetByteArrayRegion`.
+//
+// **On a desktop there is nothing to browse with**, so `discover` answers `false` and the table
+// stays empty; a program offers a typed address beside it, as one has to for a network that blocks
+// multicast anyway.
+
+module sh.sysl.skitter
+
+import sh.sysl.sdl3.{send_android_message, set_hint}
+import sysl.buf.{Buf, buf}
+import sysl.raw.ptr_cast
+import sysl.text.from_utf8_lossy
+import sysl.threads.Mutex
+
+const COMMAND_DISCOVER: u32 = 0x8005
+const COMMAND_STOP_DISCOVERY: u32 = 0x8006
+
+val HINT_DISCOVER_TYPE: string = "SKITTER_DISCOVER_TYPE"
+
+/** One instance of a service: the name it registered under, the address it resolved to — an IPv4
+ * address where it has one — and its port. */
+struct Service derives Eq
+    name: string
+    host: string
+    port: int
+
+// Everything the activity has reported since `discover`: the services present now, a number raised
+// on every change, and the last failure's code — `NsdManager`'s, or 0 for none.
+private struct Found
+    services: Buf[Service]
+    generation: int
+    failure: int
+
+private var found: Mutex[Found] = Mutex.new(Found(buf(), 0, 0))
+
+/** Starts browsing for `service_type` — `_marshal._tcp`, `_http._tcp` — replacing any browse
+ * already running and emptying the table. `true` when the request reached the activity; `false` on
+ * a desktop, which has nothing to browse with. */
+discover(service_type: string) -> bool
+    forget_all()
+
+    os() == Os.Android && set_hint(HINT_DISCOVER_TYPE, service_type) &&
+        send_android_message(COMMAND_DISCOVER, 0)
+
+/** Stops browsing and lets the multicast lock go. What was found stays in the table. Call it when
+ * the program leaves the screen: browsing costs battery. */
+stop_discovery() -> bool = os() == Os.Android && send_android_message(COMMAND_STOP_DISCOVERY, 0)
+
+/** The services found and not since lost, in the order they were found. A copy: it does not change
+ * under the caller.
+ *
+ * **Held with `lock_raw` rather than `with`**, because what leaves a `with` is held to the sharing
+ * rule and a `Buf` is refused whole — rightly, for the table's own `Buf`. Every string here is
+ * copied before the lock is let go, so nothing that leaves shares a count with the table. */
+services() -> Buf[Service]
+    val f = found.lock_raw()
+
+    defer found.unlock_raw()
+    copy_of(f.services)
+
+/** A number that changes whenever the table does, so a loop can look once a frame and rebuild only
+ * when it moved. */
+discovery_generation() -> int = found.with((f) -> f.generation)
+
+/** `NsdManager`'s code for why browsing could not start or stop, or 0 when it has not failed. */
+discovery_failure() -> int = found.with((f) -> f.failure)
+
+private copy_of(b: Buf[Service]) -> Buf[Service]
+    var out: Buf[Service] = buf()
+
+    for i in 0..<b.len()
+        val s = b[i]
+
+        out.push(Service(s.name.copy(), s.host.copy(), s.port))
+
+    out
+
+private forget_all() = found.with((f) ->
+    f.services = buf()
+    f.failure = 0
+    f.generation += 1)
+
+// ## What the activity reports, applied to the table
+//
+// Separate from the exports so the table's rules are tested without JNI: a service seen again
+// replaces the old entry rather than adding a second — a Mac that changed address announces itself
+// again under the same name — and a loss removes it by name.
+
+service_found(s: Service) = found.with((f) ->
+    var i = 0
+
+    while i < f.services.len() && f.services[i].name != s.name
+        i += 1
+
+    if i < f.services.len() then f.services[i] = s else f.services.push(s)
+    f.generation += 1)
+
+service_lost(name: string) = found.with((f) ->
+    var kept: Buf[Service] = buf()
+
+    for i in 0..<f.services.len()
+        if f.services[i].name != name then kept.push(f.services[i])
+
+    f.services = kept
+    f.generation += 1)
+
+discovery_failed(code: int) = found.with((f) ->
+    f.failure = code
+    f.generation += 1)
+
+// ## The bridge
+//
+// Three methods of `SkitterActivity`, under the naming rule `insets.sysl` describes. Each arrives on
+// a thread of Android's — `NsdManager`'s callbacks run on its own — which is why the table is behind
+// a lock rather than in bare words.
+
+@export("Java_sh_sysl_skitter_SkitterActivity_nativeServiceFound")
+service_found_jni(env: *u8, instance: *u8, name: *u8, host: *u8, port: i32) =
+    service_found(Service(jni_text(env, name), jni_text(env, host), int(port)))
+
+@export("Java_sh_sysl_skitter_SkitterActivity_nativeServiceLost")
+service_lost_jni(env: *u8, instance: *u8, name: *u8) = service_lost(jni_text(env, name))
+
+@export("Java_sh_sysl_skitter_SkitterActivity_nativeDiscoveryFailed")
+discovery_failed_jni(env: *u8, instance: *u8, code: i32) = discovery_failed(int(code))
+
+// The positions of two functions in JNI's function table, which the JNI specification fixes: an
+// `env` is the address of a pointer to that table, and these are its 172nd and 201st entries.
+const JNI_GET_ARRAY_LENGTH: usize = 171
+const JNI_GET_BYTE_ARRAY_REGION: usize = 200
+
+// The address in entry `index` of the table `env` points at.
+private jni_entry(env: *u8, index: usize) -> usize
+    val table: *usize = ptr_cast(env)
+    val entry: *usize = ptr_cast(*table + index * sizeof(usize))
+
+    *entry
+
+// A Java `byte[]` of UTF-8 as a string; anything not UTF-8 is replaced, and `null` is empty.
+private[skitter] jni_text(env: *u8, array: *u8) -> string
+    if array == null then return ""
+
+    val length: *extern(*u8, *u8) -> i32 = ptr_cast(jni_entry(env, JNI_GET_ARRAY_LENGTH))
+    val region: *extern(*u8, *u8, i32, i32, *u8) = ptr_cast(jni_entry(env, JNI_GET_BYTE_ARRAY_REGION))
+    val n = length(env, array)
+
+    if n <= 0 then return ""
+
+    var bytes: Buf[u8] = buf()
+
+    bytes.reserve(usize(n))
+    bytes.set_len(usize(n))
+    region(env, array, 0, n, &bytes[0])
+    from_utf8_lossy(bytes.view())
+end jni_text
